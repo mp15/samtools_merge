@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <assert.h>
 
 struct parsed_opts {
     size_t input_count;
@@ -68,6 +69,8 @@ bool init(parsed_opts_t* opts) {
     }
     
     // TODO: merge headers instead of just taking first one
+    // TODO: create SQ translation table
+    // TODO: create RG translation table
     opts->output_header = opts->input_header[0];
 
     opts->output_file = sam_open(opts->output_name, "wb", 0);
@@ -80,23 +83,24 @@ bool init(parsed_opts_t* opts) {
     return true;
 }
 
-bam1_t* selectRead( bam1_t **file_read, size_t input_count )
+size_t selectRead( bam1_t **file_read, size_t input_count )
 {
     // need to find element with lowest tid and pos
-    bam1_t* min = NULL;
-    int tid_min = INT_MIN, pos_min = INT_MIN;
+    size_t min = SIZE_T_MAX;
+    int32_t tid_min = INT32_MAX, pos_min = INT32_MAX;
     
     for (size_t i = 0; i < input_count; i++) {
         if (file_read[i] !=NULL) {
-            if (tid_min <= file_read[i]->core.tid && pos_min < file_read[i]->core.pos)
-            {
+            if (tid_min > file_read[i]->core.tid ||
+                (tid_min == file_read[i]->core.tid && pos_min > file_read[i]->core.pos)) {
                 tid_min = file_read[i]->core.tid;
                 pos_min = file_read[i]->core.pos;
-                min = file_read[i];
+                min = i;
             }
-            
         }
     }
+    
+    assert(min != SIZE_T_MAX); // No valid files?
     
     return min;
 }
@@ -118,8 +122,13 @@ bool merge(parsed_opts_t* opts) {
     }
 
     while (files_to_merge > 0) {
-        bam1_t* output_read = selectRead(file_read, opts->input_count);
-        sam_write1(opts->output_file, opts->output_header, output_read);
+        size_t i = selectRead(file_read, opts->input_count);
+        sam_write1(opts->output_file, opts->output_header, file_read[i]);
+        if (sam_read1(opts->input_file[i], opts->input_header[i], file_read[i]) < 0) {
+            bam_destroy1(file_read[i]);
+            file_read[i] = NULL;
+            files_to_merge--;
+        }
     }
 
     // Clean up
