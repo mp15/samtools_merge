@@ -14,8 +14,11 @@
 // You should have received a copy of the GNU General Public License along with
 // this program. If not, see L<http://www.gnu.org/licenses/>.
 
+#define _GNU_SOURCE
+
 #include <htslib/sam.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -25,18 +28,23 @@
 struct parsed_opts {
     size_t input_count;
     char** input_name;
+    char* output_name;
+};
+
+struct state {
+    size_t input_count;
     samFile** input_file;
     bam_hdr_t** input_header;
-    char* output_name;
     samFile* output_file;
     bam_hdr_t* output_header;
 };
 
 typedef struct parsed_opts parsed_opts_t;
+typedef struct state state_t;
 
 parsed_opts_t* parse_args(int argc, char** argv) {
     if (argc < 3) {
-        printf("Arguments should be: merge <input1.bam> <input2.bam> [<inputX.bam> ...] <output.bam>\r\n");
+        dprintf(STDERR_FILENO, "Arguments should be: merge <input1.bam> [<inputX.bam> ...] <output.bam>\r\n");
         return NULL;
     }
     
@@ -55,28 +63,43 @@ parsed_opts_t* parse_args(int argc, char** argv) {
     return retval;
 }
 
-bool init(parsed_opts_t* opts) {
+bam_hdr_t* merge_headers( const bam_hdr_t* input_header, const size_t input_count ) {
+    if (input_count == 0) return NULL;
+    bam_hdr_t* retval = (bam_hdr_t*)malloc(sizeof(bam_hdr_t));
+    bzero((void*)retval, sizeof(bam_hdr_t));
+    
+}
+
+bool init(parsed_opts_t* opts, state_t** state_out) {
+    state_t* retval = (state_t*) malloc(sizeof(state_t));
+    if (retval == NULL) {
+        dprintf(STDERR_FILENO, "Out of memory");
+        return false;
+    }
+    *state_out = retval;
+    retval->input_count = opts->input_count;
+    
     // Open files
-    opts->input_file = (samFile**)calloc(opts->input_count, sizeof(samFile*));
-    opts->input_header = (bam_hdr_t**)calloc(opts->input_count, sizeof(bam_hdr_t*));
+    retval->input_file = (samFile**)calloc(opts->input_count, sizeof(samFile*));
+    retval->input_header = (bam_hdr_t**)calloc(opts->input_count, sizeof(bam_hdr_t*));
     for (size_t i = 0; i < opts->input_count; i++) {
-        opts->input_file[i] = sam_open(opts->input_name[i], "rb", 0);
-        if (opts->input_file[i] == NULL) {
-            printf("Could not open input file: %s\r\n", opts->input_name[i]);
+        retval->input_file[i] = sam_open(opts->input_name[i], "rb", 0);
+        if (retval->input_file[i] == NULL) {
+            dprintf(STDERR_FILENO, "Could not open input file: %s\r\n", opts->input_name[i]);
             return false;
         }
-        opts->input_header[i] = sam_hdr_read(opts->input_file[i]);
+        retval->input_header[i] = sam_hdr_read(retval->input_file[i]);
     }
     
     // TODO: merge headers instead of just taking first one
     // TODO: create SQ translation table
     // TODO: create RG translation table
-    opts->output_header = opts->input_header[0];
+    retval->output_header = retval->input_header[0];
 
-    opts->output_file = sam_open(opts->output_name, "wb", 0);
+    retval->output_file = sam_open(opts->output_name, "wb", 0);
     
-    if (opts->output_file == NULL) {
-        printf("Could not open output file: %s\r\n", opts->output_name);
+    if (retval->output_file == NULL) {
+        dprintf(STDERR_FILENO, "Could not open output file: %s\r\n", opts->output_name);
         return false;
     }
     
@@ -105,16 +128,16 @@ size_t selectRead( bam1_t **file_read, size_t input_count )
     return min;
 }
 
-bool merge(parsed_opts_t* opts) {
-    if (sam_hdr_write(opts->output_file, opts->output_header) != 0) {
+bool merge(state_t* state) {
+    if (sam_hdr_write(state->output_file, state->output_header) != 0) {
         return false;
     }
     
-    bam1_t** file_read = calloc(opts->input_count, sizeof(bam1_t*));
-    size_t files_to_merge = opts->input_count;
-    for (size_t i = 0; i < opts->input_count; i++) {
+    bam1_t** file_read = calloc(state->input_count, sizeof(bam1_t*));
+    size_t files_to_merge = state->input_count;
+    for (size_t i = 0; i < state->input_count; i++) {
         file_read[i] = bam_init1();
-        if (sam_read1(opts->input_file[i], opts->input_header[i], file_read[i]) < 0) {
+        if (sam_read1(state->input_file[i], state->input_header[i], file_read[i]) < 0) {
             bam_destroy1(file_read[i]);
             file_read[i] = NULL;
             files_to_merge--;
@@ -122,9 +145,9 @@ bool merge(parsed_opts_t* opts) {
     }
 
     while (files_to_merge > 0) {
-        size_t i = selectRead(file_read, opts->input_count);
-        sam_write1(opts->output_file, opts->output_header, file_read[i]);
-        if (sam_read1(opts->input_file[i], opts->input_header[i], file_read[i]) < 0) {
+        size_t i = selectRead(file_read, state->input_count);
+        sam_write1(state->output_file, state->output_header, file_read[i]);
+        if (sam_read1(state->input_file[i], state->input_header[i], file_read[i]) < 0) {
             bam_destroy1(file_read[i]);
             file_read[i] = NULL;
             files_to_merge--;
@@ -132,28 +155,37 @@ bool merge(parsed_opts_t* opts) {
     }
 
     // Clean up
-    for (size_t i = 0; i < opts->input_count; i++) { if (file_read[i]) { bam_destroy1(file_read[i]); } }
+    for (size_t i = 0; i < state->input_count; i++) { if (file_read[i]) { bam_destroy1(file_read[i]); } }
 
     return true;
 }
 
-void cleanup(parsed_opts_t* opts) {
-    sam_close(opts->output_file);
+void cleanup_opts(parsed_opts_t* opts) {
     free(opts->output_name);
     for (size_t i = 0; i < opts->input_count; i++) {
-        sam_close(opts->input_file[i]);
         free(opts->input_name[i]);
+    }
+}
+
+void cleanup_state(state_t* state) {
+    sam_close(state->output_file);
+    bam_hdr_destroy(state->output_header);
+    for (size_t i = 0; i < state->input_count; i++) {
+        sam_close(state->input_file[i]);
+        bam_hdr_destroy(state->input_header[i]);
     }
 }
 
 int main(int argc, char** argv) {
 
     parsed_opts_t* opts = parse_args(argc, argv);
-    if (!opts || !init(opts)) return -1;
+    state_t* state = NULL;
+    if (!opts || !init(opts, &state)) return -1;
     
-    if (!merge(opts)) return -1;
+    if (!merge(state)) return -1;
     
-    cleanup(opts);
-      
+    cleanup_opts(opts);
+    cleanup_state(state);
+    
     return 0;
 }
