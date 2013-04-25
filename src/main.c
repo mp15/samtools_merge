@@ -108,15 +108,32 @@ bool init(parsed_opts_t* opts, state_t** state_out) {
 
 size_t selectRead( bam1_t **file_read, size_t input_count )
 {
+    assert(input_count != 0);
     // need to find element with lowest tid and pos
     size_t min = SIZE_T_MAX;
-    int32_t tid_min = INT32_MAX, pos_min = INT32_MAX;
+    // horrible hack of the day
+    // treat the int32_t tid as a uint32_t so that -1 (aka unmapped) is treated as UINT32_MAX
+    uint32_t tid_min;
+    int32_t pos_min;
+    // load initial value
+    size_t i = 0;
+    for (; i < input_count; i++) {
+        if (file_read[i] != NULL) {
+            tid_min = (uint32_t)file_read[i]->core.tid;
+            pos_min = file_read[i]->core.pos;
+            min = i;
+            break;
+        }
+    }
+    assert(min != SIZE_T_MAX); // No valid files?
     
-    for (size_t i = 0; i < input_count; i++) {
-        if (file_read[i] !=NULL) {
-            if (tid_min > file_read[i]->core.tid ||
-                (tid_min == file_read[i]->core.tid && pos_min > file_read[i]->core.pos)) {
-                tid_min = file_read[i]->core.tid;
+    // then resume our search
+    for (;i < input_count; i++) {
+        if (file_read[i] != NULL) {
+            // To complicate matters tid == -1 is a special value which should always go last
+            if ((tid_min > (uint32_t)file_read[i]->core.tid ) ||
+                (tid_min == (uint32_t)file_read[i]->core.tid && pos_min > file_read[i]->core.pos)) {
+                tid_min = (uint32_t)file_read[i]->core.tid;
                 pos_min = file_read[i]->core.pos;
                 min = i;
             }
