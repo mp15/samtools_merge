@@ -63,11 +63,13 @@ parsed_opts_t* parse_args(int argc, char** argv) {
     return retval;
 }
 
-bam_hdr_t* merge_headers( const bam_hdr_t* input_header, const size_t input_count ) {
+bam_hdr_t* merge_headers( const bam_hdr_t** input_header, const size_t input_count ) {
     if (input_count == 0) return NULL;
     bam_hdr_t* retval = (bam_hdr_t*)malloc(sizeof(bam_hdr_t));
-    bzero((void*)retval, sizeof(bam_hdr_t));
-    
+    // TODO: merge headers instead of just taking first one
+    // TODO: Need to clone interior of this?
+    memcpy((void*)retval, (const void*)input_header[0], sizeof(bam_hdr_t));
+    return retval;
 }
 
 bool init(parsed_opts_t* opts, state_t** state_out) {
@@ -91,10 +93,9 @@ bool init(parsed_opts_t* opts, state_t** state_out) {
         retval->input_header[i] = sam_hdr_read(retval->input_file[i]);
     }
     
-    // TODO: merge headers instead of just taking first one
+    retval->output_header = merge_headers(retval->input_header, opts->input_count);
     // TODO: create SQ translation table
     // TODO: create RG translation table
-    retval->output_header = retval->input_header[0];
 
     retval->output_file = sam_open(opts->output_name, "wb", 0);
     
